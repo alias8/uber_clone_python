@@ -21,13 +21,15 @@ src/ride_service/
   db/
     tables.py           SQLAlchemy 2.0 ORM tables — column-for-column port of the V1-V3 SQL
     engine.py            Async engine/session-factory seam (see "Database" below)
-  repositories.py      Postgres-backed repos (async, via db/engine.py) — driver lat/lng stay an
-                        in-memory overlay until M3's Redis geo-index (see repositories.py docstring)
+  repositories/        Postgres-backed repos (async, via db/engine.py), one module per
+                        repository (user.py/driver.py/ride.py/rating.py) — driver lat/lng stay
+                        an in-memory overlay until M3's Redis geo-index (see package docstring)
   geo.py               Haversine distance + ETA (ported from GeoUtils.kt)
   pricing.py            Fare + surge formulas, in-process (see above)
   dispatch.py            Nearby-driver radius search — in-memory now, Redis GEOSEARCH in M3
   rate_limit.py           In-memory fixed-window limiter — Redis-backed `limits` in M3
-  services.py              RideService / DriverService / RatingService — the domain logic, async
+  services/                RideService / DriverService / RatingService, one module each — the
+                            domain logic, async
   state.py                  Process-wide singletons wiring repos + services together
   auth/
     jwt.py                   JWT encode/decode (ported from JwtUtil.kt)

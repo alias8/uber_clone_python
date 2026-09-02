@@ -1,7 +1,6 @@
-"""Ride/driver/rating domain logic. Ported from RideService.kt, DriverService.kt and
-RatingService.kt. Fare calculation is now in-process (ride_service.pricing) rather than a gRPC
-call — see pricing.py's docstring. Kafka event publishing (ride-requested/accepted/completed/
-cancelled) and the SSE location/offer streams are deferred to M4/M5.
+"""Ported from RideService.kt. Fare calculation is now in-process (ride_service.pricing) rather
+than a gRPC call — see pricing.py's docstring. Kafka event publishing (ride-requested/accepted/
+completed/cancelled) is deferred to M4.
 """
 
 from __future__ import annotations
@@ -9,71 +8,15 @@ from __future__ import annotations
 import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 
 from fastapi import HTTPException, status
 
-from ride_service.dispatch import NearbyDriver, find_nearby_available_drivers
-from ride_service.models import Driver, Rating, Ride, RideStatus
+from ride_service.dispatch import find_nearby_available_drivers
+from ride_service.models import Ride, RideStatus
 from ride_service.pricing import SURGE_SEARCH_RADIUS_KM, PricingService
-from ride_service.repositories import (
-    ACTIVE_RIDE_STATUSES,
-    DriverRepository,
-    RatingRepository,
-    RideRepository,
-    UserRepository,
-)
-
-
-class DriverService:
-    def __init__(self, driver_repository: DriverRepository) -> None:
-        self._driver_repository = driver_repository
-
-    async def register_driver(self, user_id: str, vehicle_type: str, license_plate: str) -> Driver:
-        if await self._driver_repository.exists_by_id(user_id):
-            raise HTTPException(status.HTTP_409_CONFLICT, "Driver profile already exists")
-        driver = Driver(user_id=user_id, vehicle_type=vehicle_type, license_plate=license_plate)
-        return await self._driver_repository.save(driver)
-
-    async def get_profile(self, user_id: str) -> Driver:
-        driver = await self._driver_repository.find_by_id(user_id)
-        if driver is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "No driver profile found")
-        return driver
-
-    async def go_online(self, user_id: str, lat: float, lng: float) -> Driver:
-        driver = await self.get_profile(user_id)
-        await self._driver_repository.save(replace(driver, lat=lat, lng=lng))
-        return await self.mark_available_by_id(user_id)
-
-    async def go_offline(self, user_id: str) -> Driver:
-        driver = await self.get_profile(user_id)
-        await self._driver_repository.save(replace(driver, lat=None, lng=None))
-        # emitterRegistry.complete(userId) in the original closes this driver's SSE offer
-        # stream — deferred until M5 adds SSE.
-        return await self.mark_unavailable_by_id(user_id)
-
-    async def mark_available_by_id(self, user_id: str) -> Driver:
-        driver = await self._driver_repository.find_by_id(user_id)
-        if driver is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "No driver profile found")
-        return await self._driver_repository.save(replace(driver, is_available=True))
-
-    async def mark_unavailable_by_id(self, user_id: str) -> Driver:
-        driver = await self._driver_repository.find_by_id(user_id)
-        if driver is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "No driver profile found")
-        return await self._driver_repository.save(replace(driver, is_available=False))
-
-    async def update_location(self, user_id: str, lat: float, lng: float) -> None:
-        driver = await self.get_profile(user_id)
-        await self._driver_repository.save(replace(driver, lat=lat, lng=lng))
-        # The original also emits a driver_location SSE event to the rider on the driver's
-        # active ride — deferred until M5.
-
-    async def find_nearby(self, lat: float, lng: float, radius_km: float) -> list[NearbyDriver]:
-        drivers = await self._driver_repository.all()
-        return find_nearby_available_drivers(lat, lng, drivers, radius_km)
+from ride_service.repositories import ACTIVE_RIDE_STATUSES, DriverRepository, RideRepository
+from ride_service.services.driver import DriverService
 
 
 class RideService:
@@ -203,72 +146,3 @@ class RideService:
             available_drivers,
         )
         return fare
-
-
-def _incremental_avg(old_avg: float | None, old_count: int, new_score: int) -> float:
-    avg = old_avg if old_avg is not None else 0.0
-    return (avg * old_count + new_score) / (old_count + 1)
-
-
-def _round_to_2(value: float) -> float:
-    return float(Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
-
-
-class RatingService:
-    def __init__(
-        self,
-        rating_repository: RatingRepository,
-        ride_repository: RideRepository,
-        user_repository: UserRepository,
-        driver_repository: DriverRepository,
-    ) -> None:
-        self._rating_repository = rating_repository
-        self._ride_repository = ride_repository
-        self._user_repository = user_repository
-        self._driver_repository = driver_repository
-
-    async def rate(self, ride_id: str, from_user_id: str, score: int, comment: str | None) -> None:
-        if not (1 <= score <= 5):
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Score must be between 1 and 5")
-
-        ride = await self._ride_repository.find_by_id(ride_id)
-        if ride is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "Ride not found")
-        if ride.status != RideStatus.COMPLETED:
-            raise HTTPException(status.HTTP_409_CONFLICT, "Can only rate a completed ride")
-
-        if from_user_id == ride.rider_id:
-            if ride.driver_id is None:
-                raise HTTPException(status.HTTP_409_CONFLICT, "Ride has no assigned driver")
-            to_user_id = ride.driver_id
-        elif from_user_id == ride.driver_id:
-            to_user_id = ride.rider_id
-        else:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "Not a participant in this ride")
-
-        if await self._rating_repository.exists_by_ride_id_and_from_user_id(ride_id, from_user_id):
-            raise HTTPException(status.HTTP_409_CONFLICT, "Already rated this ride")
-
-        await self._rating_repository.save(
-            Rating(
-                ride_id=ride_id,
-                from_user_id=from_user_id,
-                to_user_id=to_user_id,
-                score=score,
-                comment=comment,
-            )
-        )
-
-        driver = await self._driver_repository.find_by_id(to_user_id)
-        if driver is not None:
-            new_avg = _round_to_2(_incremental_avg(driver.avg_rating, driver.rating_count, score))
-            await self._driver_repository.save(
-                replace(driver, avg_rating=new_avg, rating_count=driver.rating_count + 1)
-            )
-
-        user = await self._user_repository.find_by_id(to_user_id)
-        if user is not None:
-            new_avg = _round_to_2(_incremental_avg(user.avg_rating, user.rating_count, score))
-            await self._user_repository.save(
-                replace(user, avg_rating=new_avg, rating_count=user.rating_count + 1)
-            )
