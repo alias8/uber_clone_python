@@ -1,0 +1,50 @@
+[project]
+name = "ride-service"
+version = "0.1.0"
+description = "FastAPI sibling of uber_clone: the same ride-hailing domain, built with a production-style Python stack. Fare/surge quoting is an in-process module here, not the separate gRPC service the Kotlin original uses."
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "pyjwt>=2.9",
+    "bcrypt>=4.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.13",
+    "ruff>=0.7",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.27",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src", "tests"]
+
+[tool.ruff]
+line-length = 110
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's dependency-injection pattern relies on calling Depends()/require_role() in
+# argument defaults — that's idiomatic here, not the mutable-default-argument bug B008 targets.
+extend-immutable-calls = ["fastapi.Depends", "ride_service.auth.dependencies.require_role"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
