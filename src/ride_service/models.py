@@ -47,9 +47,8 @@ class Driver:
     is_available: bool = False
     avg_rating: float | None = None
     rating_count: int = 0
-    # In-memory stand-in for the Redis geo-index used from M3 onward.
-    lat: float | None = None
-    lng: float | None = None
+    # No lat/lng field, matching uber_clone's Driver JPA entity — location lives only in
+    # Redis's geo-index (drivers:locations), never in Postgres. See repositories/driver.py.
 
 
 @dataclass

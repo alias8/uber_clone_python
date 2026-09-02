@@ -19,7 +19,7 @@ async def request_ride(
     _auth: AuthContext = Depends(require_role(Role.RIDER)),
 ) -> RideResponse:
     # Prevents rider from requesting, then cancelling rapidly.
-    if not ride_request_rate_limiter.allow(user.id):
+    if not await ride_request_rate_limiter.allow(user.id):
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many ride requests — try again shortly")
     ride = await ride_service.request_ride(
         user.id, request.pickup_lat, request.pickup_lng, request.dropoff_lat, request.dropoff_lng

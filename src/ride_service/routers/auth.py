@@ -31,7 +31,7 @@ def _verify_password(password: str, password_hash: str) -> bool:
 
 @router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
 async def register(request: RegisterRequest, http_request: Request, response: Response) -> AuthResponse:
-    if not auth_attempt_rate_limiter.allow(_client_ip(http_request)):
+    if not await auth_attempt_rate_limiter.allow(_client_ip(http_request)):
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many attempts — try again later")
     if await user_repository.exists_by_username(request.username):
         raise HTTPException(status.HTTP_409_CONFLICT, "Username already taken")
@@ -45,7 +45,7 @@ async def register(request: RegisterRequest, http_request: Request, response: Re
 
 @router.post("/login", response_model=AuthResponse)
 async def login(request: LoginRequest, http_request: Request, response: Response) -> AuthResponse:
-    if not auth_attempt_rate_limiter.allow(_client_ip(http_request)):
+    if not await auth_attempt_rate_limiter.allow(_client_ip(http_request)):
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many attempts — try again later")
 
     user = await user_repository.find_by_username(request.username)

@@ -4,15 +4,18 @@ In uber_clone this logic lives in a standalone gRPC pricing-service. This port k
 plain in-process module instead — a deliberate scope simplification (see README), not a missing
 piece. The formulas and constants are ported exactly from PricingGrpcService.kt so a known
 pickup/dropoff pair and a known pending-rides/available-drivers ratio produce the same numbers.
+
+The surge cache is real Redis (SET ... EX), same key format and 30s TTL as
+PricingGrpcService.kt's surgeKey()/SURGE_TTL_SECONDS.
 """
 
 from __future__ import annotations
 
-import time
-from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
+from typing import cast
 
 from ride_service.geo import haversine_km
+from ride_service.redis_client import get_client
 
 BASE_FARE = Decimal("2.00")
 PER_KM_RATE = Decimal("1.50")
@@ -47,54 +50,34 @@ def calculate_fare(distance_km: float, surge_multiplier: Decimal) -> Decimal:
     return (base * surge_multiplier).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
 
 
-@dataclass
-class _CacheEntry:
-    value: Decimal
-    expires_at: float
-
-
 class SurgeCache:
-    """In-memory stand-in for the Redis `SET ... EX` cache used from M3 onward."""
+    async def get(self, key: str) -> Decimal | None:
+        cached = cast("str | None", await get_client().get(key))
+        return Decimal(cached) if cached is not None else None
 
-    def __init__(self) -> None:
-        self._entries: dict[str, _CacheEntry] = {}
-
-    def get(self, key: str) -> Decimal | None:
-        entry = self._entries.get(key)
-        if entry is None or entry.expires_at <= time.monotonic():
-            return None
-        return entry.value
-
-    def set(self, key: str, value: Decimal, ttl_seconds: int = SURGE_TTL_SECONDS) -> None:
-        self._entries[key] = _CacheEntry(value=value, expires_at=time.monotonic() + ttl_seconds)
-
-    def clear(self) -> None:
-        self._entries.clear()
+    async def set(self, key: str, value: Decimal, ttl_seconds: int = SURGE_TTL_SECONDS) -> None:
+        await get_client().set(key, str(value), ex=ttl_seconds)
 
 
 class PricingService:
     """Computes fare quotes. Callers supply the pending-ride and available-driver counts —
-    where those counts come from (in-memory repos for now, Postgres/Redis from M2/M3) is not
-    this module's concern."""
+    where those counts come from (Postgres/Redis) is not this module's concern."""
 
     def __init__(self, cache: SurgeCache | None = None) -> None:
         self._cache = cache or SurgeCache()
 
-    def clear_cache(self) -> None:
-        self._cache.clear()
-
-    def get_surge_multiplier(
+    async def get_surge_multiplier(
         self, lat: float, lng: float, pending_rides: int, available_drivers: int
     ) -> Decimal:
         key = surge_grid_key(lat, lng)
-        cached = self._cache.get(key)
+        cached = await self._cache.get(key)
         if cached is not None:
             return cached
         multiplier = compute_surge_multiplier(pending_rides, available_drivers)
-        self._cache.set(key, multiplier)
+        await self._cache.set(key, multiplier)
         return multiplier
 
-    def get_fare_quote(
+    async def get_fare_quote(
         self,
         pickup_lat: float,
         pickup_lng: float,
@@ -104,6 +87,6 @@ class PricingService:
         available_drivers: int,
     ) -> tuple[Decimal, Decimal]:
         distance_km = haversine_km(pickup_lat, pickup_lng, dropoff_lat, dropoff_lng)
-        surge = self.get_surge_multiplier(pickup_lat, pickup_lng, pending_rides, available_drivers)
+        surge = await self.get_surge_multiplier(pickup_lat, pickup_lng, pending_rides, available_drivers)
         fare = calculate_fare(distance_km, surge)
         return fare, surge

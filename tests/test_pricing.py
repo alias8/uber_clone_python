@@ -53,17 +53,17 @@ def test_surge_grid_key_rounds_to_1km_resolution() -> None:
     assert surge_grid_key(40.71284, -74.00601) == "surge:40.71:-74.01"
 
 
-def test_pricing_service_caches_surge_within_the_grid_cell() -> None:
+async def test_pricing_service_caches_surge_within_the_grid_cell() -> None:
     service = PricingService()
-    first = service.get_surge_multiplier(*NYC, pending_rides=6, available_drivers=4)
+    first = await service.get_surge_multiplier(*NYC, pending_rides=6, available_drivers=4)
     # Change the inputs — a cached hit should still return the first result, not recompute.
-    second = service.get_surge_multiplier(*NYC, pending_rides=100, available_drivers=1)
+    second = await service.get_surge_multiplier(*NYC, pending_rides=100, available_drivers=1)
     assert first == second == Decimal("1.50")
 
 
-def test_pricing_service_get_fare_quote_combines_distance_and_surge() -> None:
+async def test_pricing_service_get_fare_quote_combines_distance_and_surge() -> None:
     service = PricingService()
-    fare, surge = service.get_fare_quote(*NYC, *NYC, pending_rides=6, available_drivers=4)
+    fare, surge = await service.get_fare_quote(*NYC, *NYC, pending_rides=6, available_drivers=4)
     # Same pickup/dropoff => 0km distance => base fare is just $2.00.
     assert surge == Decimal("1.50")
     assert fare == Decimal("3.00")

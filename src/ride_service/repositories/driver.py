@@ -4,27 +4,13 @@ from sqlalchemy import exists, select
 
 from ride_service.db.engine import get_sessionmaker
 from ride_service.db.tables import DriverRow
+from ride_service.dispatch import DRIVER_AVAILABLE_SET, DRIVER_GEO_KEY
 from ride_service.models import Driver
+from ride_service.redis_client import get_client
 
 
 class DriverRepository:
-    def __init__(self) -> None:
-        # In-memory stand-in for the Redis geo-index, until M3 — see package docstring.
-        self._locations: dict[str, tuple[float, float]] = {}
-
-    def _with_location(self, driver: Driver) -> Driver:
-        loc = self._locations.get(driver.user_id)
-        if loc is None:
-            return driver
-        driver.lat, driver.lng = loc
-        return driver
-
     async def save(self, driver: Driver) -> Driver:
-        if driver.lat is not None and driver.lng is not None:
-            self._locations[driver.user_id] = (driver.lat, driver.lng)
-        else:
-            self._locations.pop(driver.user_id, None)
-
         row = DriverRow(
             user_id=driver.user_id,
             vehicle_type=driver.vehicle_type,
@@ -36,7 +22,26 @@ class DriverRepository:
         async with get_sessionmaker()() as session:
             merged = await session.merge(row)
             await session.commit()
-            return self._with_location(self._driver_from_row(merged))
+            saved = self._driver_from_row(merged)
+
+        # Same dual-write as uber_clone's DriverService.kt: a Postgres save plus a separate
+        # Redis availability-set call, not one atomic operation. Location is a wholly separate
+        # concern (set_location/clear_location below) — Postgres has no lat/lng column at all,
+        # so save() must not touch the geo-index, or a plain is_available toggle (which always
+        # re-fetches the driver first, with no location info) would wipe it.
+        client = get_client()
+        if driver.is_available:
+            await client.sadd(DRIVER_AVAILABLE_SET, driver.user_id)
+        else:
+            await client.srem(DRIVER_AVAILABLE_SET, driver.user_id)
+
+        return saved
+
+    async def set_location(self, user_id: str, lat: float, lng: float) -> None:
+        await get_client().geoadd(DRIVER_GEO_KEY, [lng, lat, user_id])
+
+    async def clear_location(self, user_id: str) -> None:
+        await get_client().zrem(DRIVER_GEO_KEY, user_id)
 
     @staticmethod
     def _driver_from_row(row: DriverRow) -> Driver:
@@ -52,18 +57,10 @@ class DriverRepository:
     async def find_by_id(self, user_id: str) -> Driver | None:
         async with get_sessionmaker()() as session:
             row = await session.get(DriverRow, user_id)
-            return self._with_location(self._driver_from_row(row)) if row is not None else None
+            return self._driver_from_row(row) if row is not None else None
 
     async def exists_by_id(self, user_id: str) -> bool:
         async with get_sessionmaker()() as session:
             return bool(
                 (await session.execute(select(exists().where(DriverRow.user_id == user_id)))).scalar_one()
             )
-
-    async def all(self) -> list[Driver]:
-        async with get_sessionmaker()() as session:
-            rows = (await session.execute(select(DriverRow))).scalars().all()
-            return [self._with_location(self._driver_from_row(r)) for r in rows]
-
-    def clear(self) -> None:
-        self._locations.clear()

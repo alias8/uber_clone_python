@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy import exists, func, select
 
 from ride_service.db.engine import get_sessionmaker
@@ -80,6 +82,14 @@ class RideRepository:
                 .where(RideRow.driver_id == driver_id)
                 .order_by(RideRow.requested_at.desc())
             )
+            rows = (await session.execute(stmt)).scalars().all()
+            return [_ride_from_row(r) for r in rows]
+
+    async def find_by_status_and_requested_at_before(
+        self, status: RideStatus, cutoff: datetime
+    ) -> list[Ride]:
+        async with get_sessionmaker()() as session:
+            stmt = select(RideRow).where(RideRow.status == status.value, RideRow.requested_at < cutoff)
             rows = (await session.execute(stmt)).scalars().all()
             return [_ride_from_row(r) for r in rows]
 

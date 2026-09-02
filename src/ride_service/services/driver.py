@@ -28,13 +28,13 @@ class DriverService:
         return driver
 
     async def go_online(self, user_id: str, lat: float, lng: float) -> Driver:
-        driver = await self.get_profile(user_id)
-        await self._driver_repository.save(replace(driver, lat=lat, lng=lng))
+        await self.get_profile(user_id)
+        await self._driver_repository.set_location(user_id, lat, lng)
         return await self.mark_available_by_id(user_id)
 
     async def go_offline(self, user_id: str) -> Driver:
-        driver = await self.get_profile(user_id)
-        await self._driver_repository.save(replace(driver, lat=None, lng=None))
+        await self.get_profile(user_id)
+        await self._driver_repository.clear_location(user_id)
         # emitterRegistry.complete(userId) in the original closes this driver's SSE offer
         # stream — deferred until M5 adds SSE.
         return await self.mark_unavailable_by_id(user_id)
@@ -52,11 +52,10 @@ class DriverService:
         return await self._driver_repository.save(replace(driver, is_available=False))
 
     async def update_location(self, user_id: str, lat: float, lng: float) -> None:
-        driver = await self.get_profile(user_id)
-        await self._driver_repository.save(replace(driver, lat=lat, lng=lng))
+        await self.get_profile(user_id)
+        await self._driver_repository.set_location(user_id, lat, lng)
         # The original also emits a driver_location SSE event to the rider on the driver's
         # active ride — deferred until M5.
 
     async def find_nearby(self, lat: float, lng: float, radius_km: float) -> list[NearbyDriver]:
-        drivers = await self._driver_repository.all()
-        return find_nearby_available_drivers(lat, lng, drivers, radius_km)
+        return await find_nearby_available_drivers(lat, lng, radius_km)
