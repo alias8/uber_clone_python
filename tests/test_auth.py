@@ -5,12 +5,12 @@ from fastapi.testclient import TestClient
 from ride_service import state
 
 
-def test_register_issues_httponly_cookie_and_creates_rider(client: TestClient) -> None:
+async def test_register_issues_httponly_cookie_and_creates_rider(client: TestClient) -> None:
     response = client.post("/auth/register", json={"username": "alice", "password": "hunter2"})
     assert response.status_code == 201
     assert "auth_token" in response.cookies
     assert response.json()["token"]
-    user = state.user_repository.find_by_username("alice")
+    user = await state.user_repository.find_by_username("alice")
     assert user is not None
     assert user.role.value == "RIDER"
 
@@ -52,11 +52,11 @@ def test_me_requires_authentication(client: TestClient) -> None:
     assert response.status_code == 401
 
 
-def test_me_returns_current_user_id(client: TestClient) -> None:
+async def test_me_returns_current_user_id(client: TestClient) -> None:
     client.post("/auth/register", json={"username": "alice", "password": "hunter2"})
     response = client.get("/auth/me")
     assert response.status_code == 200
-    user = state.user_repository.find_by_username("alice")
+    user = await state.user_repository.find_by_username("alice")
     assert user is not None
     assert response.json()["user_id"] == user.id
 

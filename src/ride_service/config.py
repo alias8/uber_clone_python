@@ -8,6 +8,9 @@ class Settings(BaseSettings):
     jwt_expiration_ms: int = 2_592_000_000  # 30 days, matches application.properties
     cookie_secure: bool = False
 
+    # Mirrors uber_clone's spring.datasource.url default (same user/password), distinct DB name.
+    database_url: str = "postgresql+asyncpg://jameskirk:password@localhost:5432/uber_clone_python"
+
     ride_request_limit_per_minute: int = 5
     auth_attempts_limit_per_15_min: int = 10
 

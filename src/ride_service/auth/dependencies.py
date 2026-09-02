@@ -50,8 +50,8 @@ def require_role(role: Role) -> Callable[[AuthContext], AuthContext]:
     return _dependency
 
 
-def resolve_current_user(auth: AuthContext = Depends(get_current_auth)) -> User:
-    user = user_repository.find_by_username(auth.username)
+async def resolve_current_user(auth: AuthContext = Depends(get_current_auth)) -> User:
+    user = await user_repository.find_by_username(auth.username)
     if user is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Not authenticated")
     return user

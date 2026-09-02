@@ -1,15 +1,18 @@
-"""Process-wide singletons for M1's in-memory backing stores.
+"""Process-wide singletons wiring the app together.
 
-Stands in for Spring's singleton-bean wiring. From M2 onward these get replaced by proper
-FastAPI dependency providers backed by a Postgres session factory / Redis connection pool —
-this module is the seam where that swap happens.
+Stands in for Spring's singleton-bean wiring. The four repositories are now backed by Postgres
+(see repositories.py, db/engine.py) rather than in-memory dicts; rate limiting and the pricing
+cache remain in-process until M3 wires in Redis — that's the next seam.
 """
 
 from ride_service.config import settings
+from ride_service.db import engine as db_engine
 from ride_service.pricing import PricingService
 from ride_service.rate_limit import RateLimiter
 from ride_service.repositories import DriverRepository, RatingRepository, RideRepository, UserRepository
 from ride_service.services import DriverService, RatingService, RideService
+
+db_engine.configure(settings.database_url)
 
 user_repository = UserRepository()
 driver_repository = DriverRepository()

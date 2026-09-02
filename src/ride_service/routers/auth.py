@@ -30,13 +30,13 @@ def _verify_password(password: str, password_hash: str) -> bool:
 
 
 @router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
-def register(request: RegisterRequest, http_request: Request, response: Response) -> AuthResponse:
+async def register(request: RegisterRequest, http_request: Request, response: Response) -> AuthResponse:
     if not auth_attempt_rate_limiter.allow(_client_ip(http_request)):
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many attempts — try again later")
-    if user_repository.exists_by_username(request.username):
+    if await user_repository.exists_by_username(request.username):
         raise HTTPException(status.HTTP_409_CONFLICT, "Username already taken")
 
-    user = user_repository.save(
+    user = await user_repository.save(
         User(username=request.username, password_hash=_hash_password(request.password))
     )
     token = issue_token_cookie(response, user.username, Role.RIDER)
@@ -44,11 +44,11 @@ def register(request: RegisterRequest, http_request: Request, response: Response
 
 
 @router.post("/login", response_model=AuthResponse)
-def login(request: LoginRequest, http_request: Request, response: Response) -> AuthResponse:
+async def login(request: LoginRequest, http_request: Request, response: Response) -> AuthResponse:
     if not auth_attempt_rate_limiter.allow(_client_ip(http_request)):
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many attempts — try again later")
 
-    user = user_repository.find_by_username(request.username)
+    user = await user_repository.find_by_username(request.username)
     if user is None or not _verify_password(request.password, user.password_hash):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid credentials")
 
@@ -57,7 +57,7 @@ def login(request: LoginRequest, http_request: Request, response: Response) -> A
 
 
 @router.post("/switch-mode", response_model=AuthResponse)
-def switch_mode(
+async def switch_mode(
     request: SwitchModeRequest, response: Response, auth: AuthContext = Depends(get_current_auth)
 ) -> AuthResponse:
     try:
@@ -69,7 +69,7 @@ def switch_mode(
     # switching back to RIDER mode is always allowed, matching SwitchModeRequest's original
     # behavior of only gating the DRIVER branch.
     if requested_mode == Role.DRIVER:
-        user = user_repository.find_by_username(auth.username)
+        user = await user_repository.find_by_username(auth.username)
         if user is None:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED)
         if user.role != Role.DRIVER:
@@ -80,8 +80,8 @@ def switch_mode(
 
 
 @router.get("/me", response_model=MeResponse)
-def me(auth: AuthContext = Depends(get_current_auth)) -> MeResponse:
-    user = user_repository.find_by_username(auth.username)
+async def me(auth: AuthContext = Depends(get_current_auth)) -> MeResponse:
+    user = await user_repository.find_by_username(auth.username)
     if user is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED)
     return MeResponse(user_id=user.id)

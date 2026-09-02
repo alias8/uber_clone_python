@@ -6,7 +6,7 @@ cancelled) and the SSE location/offer streams are deferred to M4/M5.
 
 from __future__ import annotations
 
-import threading
+import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
@@ -29,50 +29,51 @@ class DriverService:
     def __init__(self, driver_repository: DriverRepository) -> None:
         self._driver_repository = driver_repository
 
-    def register_driver(self, user_id: str, vehicle_type: str, license_plate: str) -> Driver:
-        if self._driver_repository.exists_by_id(user_id):
+    async def register_driver(self, user_id: str, vehicle_type: str, license_plate: str) -> Driver:
+        if await self._driver_repository.exists_by_id(user_id):
             raise HTTPException(status.HTTP_409_CONFLICT, "Driver profile already exists")
         driver = Driver(user_id=user_id, vehicle_type=vehicle_type, license_plate=license_plate)
-        return self._driver_repository.save(driver)
+        return await self._driver_repository.save(driver)
 
-    def get_profile(self, user_id: str) -> Driver:
-        driver = self._driver_repository.find_by_id(user_id)
+    async def get_profile(self, user_id: str) -> Driver:
+        driver = await self._driver_repository.find_by_id(user_id)
         if driver is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "No driver profile found")
         return driver
 
-    def go_online(self, user_id: str, lat: float, lng: float) -> Driver:
-        driver = self.get_profile(user_id)
-        self._driver_repository.save(replace(driver, lat=lat, lng=lng))
-        return self.mark_available_by_id(user_id)
+    async def go_online(self, user_id: str, lat: float, lng: float) -> Driver:
+        driver = await self.get_profile(user_id)
+        await self._driver_repository.save(replace(driver, lat=lat, lng=lng))
+        return await self.mark_available_by_id(user_id)
 
-    def go_offline(self, user_id: str) -> Driver:
-        driver = self.get_profile(user_id)
-        self._driver_repository.save(replace(driver, lat=None, lng=None))
+    async def go_offline(self, user_id: str) -> Driver:
+        driver = await self.get_profile(user_id)
+        await self._driver_repository.save(replace(driver, lat=None, lng=None))
         # emitterRegistry.complete(userId) in the original closes this driver's SSE offer
         # stream — deferred until M5 adds SSE.
-        return self.mark_unavailable_by_id(user_id)
+        return await self.mark_unavailable_by_id(user_id)
 
-    def mark_available_by_id(self, user_id: str) -> Driver:
-        driver = self._driver_repository.find_by_id(user_id)
+    async def mark_available_by_id(self, user_id: str) -> Driver:
+        driver = await self._driver_repository.find_by_id(user_id)
         if driver is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "No driver profile found")
-        return self._driver_repository.save(replace(driver, is_available=True))
+        return await self._driver_repository.save(replace(driver, is_available=True))
 
-    def mark_unavailable_by_id(self, user_id: str) -> Driver:
-        driver = self._driver_repository.find_by_id(user_id)
+    async def mark_unavailable_by_id(self, user_id: str) -> Driver:
+        driver = await self._driver_repository.find_by_id(user_id)
         if driver is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "No driver profile found")
-        return self._driver_repository.save(replace(driver, is_available=False))
+        return await self._driver_repository.save(replace(driver, is_available=False))
 
-    def update_location(self, user_id: str, lat: float, lng: float) -> None:
-        driver = self.get_profile(user_id)
-        self._driver_repository.save(replace(driver, lat=lat, lng=lng))
+    async def update_location(self, user_id: str, lat: float, lng: float) -> None:
+        driver = await self.get_profile(user_id)
+        await self._driver_repository.save(replace(driver, lat=lat, lng=lng))
         # The original also emits a driver_location SSE event to the rider on the driver's
         # active ride — deferred until M5.
 
-    def find_nearby(self, lat: float, lng: float, radius_km: float) -> list[NearbyDriver]:
-        return find_nearby_available_drivers(lat, lng, self._driver_repository.all(), radius_km)
+    async def find_nearby(self, lat: float, lng: float, radius_km: float) -> list[NearbyDriver]:
+        drivers = await self._driver_repository.all()
+        return find_nearby_available_drivers(lat, lng, drivers, radius_km)
 
 
 class RideService:
@@ -89,14 +90,14 @@ class RideService:
         self._pricing_service = pricing_service
         # Guards the accept-ride check-then-write sequence. uber_clone relies on JPA optimistic
         # locking (a `version` column + ObjectOptimisticLockingFailureException) to make two
-        # concurrent accepts of the same ride safe; with a single in-memory process, a lock
-        # around the same sequence gives the same guarantee.
-        self._accept_lock = threading.Lock()
+        # concurrent accepts of the same ride safe; the app is a single asyncio event loop, so
+        # an asyncio.Lock around the same sequence gives the same guarantee.
+        self._accept_lock = asyncio.Lock()
 
-    def request_ride(
+    async def request_ride(
         self, rider_id: str, pickup_lat: float, pickup_lng: float, dropoff_lat: float, dropoff_lng: float
     ) -> Ride:
-        if self._ride_repository.exists_by_rider_id_and_status_in(rider_id, ACTIVE_RIDE_STATUSES):
+        if await self._ride_repository.exists_by_rider_id_and_status_in(rider_id, ACTIVE_RIDE_STATUSES):
             raise HTTPException(status.HTTP_409_CONFLICT, "Rider already has an active ride")
 
         ride = Ride(
@@ -106,23 +107,23 @@ class RideService:
             dropoff_lat=dropoff_lat,
             dropoff_lng=dropoff_lng,
         )
-        estimated_fare = self._calculate_fare(ride)
-        saved = self._ride_repository.save(replace(ride, estimated_fare=estimated_fare))
+        estimated_fare = await self._calculate_fare(ride)
+        saved = await self._ride_repository.save(replace(ride, estimated_fare=estimated_fare))
         # kafkaEventProducer.publishRideRequested(saved.id) — deferred until M4.
         return saved
 
-    def get_ride(self, ride_id: str) -> Ride:
-        ride = self._ride_repository.find_by_id(ride_id)
+    async def get_ride(self, ride_id: str) -> Ride:
+        ride = await self._ride_repository.find_by_id(ride_id)
         if ride is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Ride not found")
         return ride
 
-    def accept_ride(self, ride_id: str, driver_id: str) -> Ride:
-        with self._accept_lock:
-            ride = self.get_ride(ride_id)
+    async def accept_ride(self, ride_id: str, driver_id: str) -> Ride:
+        async with self._accept_lock:
+            ride = await self.get_ride(ride_id)
             if ride.status != RideStatus.REQUESTED:
                 raise HTTPException(status.HTTP_409_CONFLICT, "Ride is not available for acceptance")
-            driver = self._driver_repository.find_by_id(driver_id)
+            driver = await self._driver_repository.find_by_id(driver_id)
             if driver is None:
                 raise HTTPException(
                     status.HTTP_403_FORBIDDEN, "No driver profile found — register as a driver first"
@@ -130,31 +131,31 @@ class RideService:
             if not driver.is_available:
                 raise HTTPException(status.HTTP_409_CONFLICT, "Driver is not currently available")
 
-            self._driver_service.mark_unavailable_by_id(driver_id)
-            saved = self._ride_repository.save(
+            await self._driver_service.mark_unavailable_by_id(driver_id)
+            saved = await self._ride_repository.save(
                 replace(ride, driver_id=driver_id, status=RideStatus.MATCHED, version=ride.version + 1)
             )
             # kafkaEventProducer.publishRideAccepted(saved.id) — deferred until M4.
             return saved
 
-    def start_ride(self, ride_id: str, driver_id: str) -> Ride:
-        ride = self.get_ride(ride_id)
+    async def start_ride(self, ride_id: str, driver_id: str) -> Ride:
+        ride = await self.get_ride(ride_id)
         if ride.status != RideStatus.MATCHED:
             raise HTTPException(status.HTTP_409_CONFLICT, "Ride is not in MATCHED state")
         if ride.driver_id != driver_id:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Not the assigned driver for this ride")
-        return self._ride_repository.save(
+        return await self._ride_repository.save(
             replace(ride, status=RideStatus.IN_PROGRESS, version=ride.version + 1)
         )
 
-    def complete_ride(self, ride_id: str, driver_id: str) -> Ride:
-        ride = self.get_ride(ride_id)
+    async def complete_ride(self, ride_id: str, driver_id: str) -> Ride:
+        ride = await self.get_ride(ride_id)
         if ride.status != RideStatus.IN_PROGRESS:
             raise HTTPException(status.HTTP_409_CONFLICT, "Ride is not IN_PROGRESS")
         if ride.driver_id != driver_id:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Not the assigned driver for this ride")
 
-        saved = self._ride_repository.save(
+        saved = await self._ride_repository.save(
             replace(
                 ride,
                 status=RideStatus.COMPLETED,
@@ -163,12 +164,12 @@ class RideService:
                 version=ride.version + 1,
             )
         )
-        self._driver_service.mark_available_by_id(driver_id)
+        await self._driver_service.mark_available_by_id(driver_id)
         # kafkaEventProducer.publishRideCompleted(saved.id) — deferred until M4.
         return saved
 
-    def cancel_ride(self, ride_id: str, user_id: str) -> Ride:
-        ride = self.get_ride(ride_id)
+    async def cancel_ride(self, ride_id: str, user_id: str) -> Ride:
+        ride = await self.get_ride(ride_id)
         if ride.status in (RideStatus.IN_PROGRESS, RideStatus.COMPLETED):
             raise HTTPException(
                 status.HTTP_409_CONFLICT, f"Cannot cancel a ride with status {ride.status.value}"
@@ -177,9 +178,9 @@ class RideService:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Not a participant in this ride")
 
         if ride.driver_id is not None:
-            self._driver_service.mark_available_by_id(ride.driver_id)
+            await self._driver_service.mark_available_by_id(ride.driver_id)
 
-        saved = self._ride_repository.save(
+        saved = await self._ride_repository.save(
             replace(ride, status=RideStatus.CANCELLED, version=ride.version + 1)
         )
         # kafkaEventProducer.publishRideCancelled(saved.id) — deferred until M4.
@@ -187,12 +188,11 @@ class RideService:
 
     # Calls the in-process pricing module rather than a separate gRPC pricing-service — the
     # deliberate simplification this port makes relative to uber_clone (see pricing.py).
-    def _calculate_fare(self, ride: Ride) -> Decimal:
-        pending_rides = self._ride_repository.count_pending_near(ride.pickup_lat, ride.pickup_lng)
+    async def _calculate_fare(self, ride: Ride) -> Decimal:
+        pending_rides = await self._ride_repository.count_pending_near(ride.pickup_lat, ride.pickup_lng)
+        drivers = await self._driver_repository.all()
         available_drivers = len(
-            find_nearby_available_drivers(
-                ride.pickup_lat, ride.pickup_lng, self._driver_repository.all(), SURGE_SEARCH_RADIUS_KM
-            )
+            find_nearby_available_drivers(ride.pickup_lat, ride.pickup_lng, drivers, SURGE_SEARCH_RADIUS_KM)
         )
         fare, _surge = self._pricing_service.get_fare_quote(
             ride.pickup_lat,
@@ -227,11 +227,11 @@ class RatingService:
         self._user_repository = user_repository
         self._driver_repository = driver_repository
 
-    def rate(self, ride_id: str, from_user_id: str, score: int, comment: str | None) -> None:
+    async def rate(self, ride_id: str, from_user_id: str, score: int, comment: str | None) -> None:
         if not (1 <= score <= 5):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Score must be between 1 and 5")
 
-        ride = self._ride_repository.find_by_id(ride_id)
+        ride = await self._ride_repository.find_by_id(ride_id)
         if ride is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Ride not found")
         if ride.status != RideStatus.COMPLETED:
@@ -246,10 +246,10 @@ class RatingService:
         else:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Not a participant in this ride")
 
-        if self._rating_repository.exists_by_ride_id_and_from_user_id(ride_id, from_user_id):
+        if await self._rating_repository.exists_by_ride_id_and_from_user_id(ride_id, from_user_id):
             raise HTTPException(status.HTTP_409_CONFLICT, "Already rated this ride")
 
-        self._rating_repository.save(
+        await self._rating_repository.save(
             Rating(
                 ride_id=ride_id,
                 from_user_id=from_user_id,
@@ -259,14 +259,16 @@ class RatingService:
             )
         )
 
-        driver = self._driver_repository.find_by_id(to_user_id)
+        driver = await self._driver_repository.find_by_id(to_user_id)
         if driver is not None:
             new_avg = _round_to_2(_incremental_avg(driver.avg_rating, driver.rating_count, score))
-            self._driver_repository.save(
+            await self._driver_repository.save(
                 replace(driver, avg_rating=new_avg, rating_count=driver.rating_count + 1)
             )
 
-        user = self._user_repository.find_by_id(to_user_id)
+        user = await self._user_repository.find_by_id(to_user_id)
         if user is not None:
             new_avg = _round_to_2(_incremental_avg(user.avg_rating, user.rating_count, score))
-            self._user_repository.save(replace(user, avg_rating=new_avg, rating_count=user.rating_count + 1))
+            await self._user_repository.save(
+                replace(user, avg_rating=new_avg, rating_count=user.rating_count + 1)
+            )
