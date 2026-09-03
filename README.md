@@ -184,5 +184,9 @@ limiting), the Kafka dispatch pipeline + stale-ride retry, and now SSE for live 
 location/ETA and ride offers — all covered by tests running against real Postgres, Redis, and
 Kafka via testcontainers, `mypy --strict` and `pytest` clean. Not yet built:
 
-- **Milestone 6** — Docker + docker-compose + GitHub Actions CI running against real infra
-- **Milestone 7 (stretch)** — port the multi-region AWS deployment doc, optionally a live deploy
+- **Milestone 6** — Docker + docker-compose + GitHub Actions CI running the app against real
+  Postgres/Redis/Kafka containers — this stays inside Docker and GitHub's own runners, same as
+  the rest of the project; neither this port nor `uber_clone` is ever deployed to real cloud
+  infrastructure
+- **Milestone 7 (stretch)** — port the multi-region AWS deployment doc — a design writeup, not
+  an actual deployment
