@@ -1,13 +1,18 @@
-"""Ported from uber_clone's RideController.kt."""
+"""Ported from uber_clone's RideController.kt (and RideLocationController.kt for the SSE
+endpoint)."""
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 
+from ride_service import sse
 from ride_service.auth.dependencies import AuthContext, get_current_auth, require_role, resolve_current_user
-from ride_service.models import Role, User
+from ride_service.models import RideStatus, Role, User
 from ride_service.schemas import RatingRequest, RideRequest, RideResponse, ride_to_response
 from ride_service.state import rating_service, ride_repository, ride_request_rate_limiter, ride_service
+
+_TRACKABLE_STATUSES = (RideStatus.MATCHED, RideStatus.IN_PROGRESS)
 
 router = APIRouter(prefix="/rides", tags=["rides"])
 
@@ -75,3 +80,17 @@ async def rate_ride(
     ride_id: str, request: RatingRequest, user: User = Depends(resolve_current_user)
 ) -> None:
     await rating_service.rate(ride_id, user.id, request.score, request.comment)
+
+
+@router.get("/{ride_id}/location")
+async def stream_driver_location(
+    ride_id: str,
+    user: User = Depends(resolve_current_user),
+    _auth: AuthContext = Depends(require_role(Role.RIDER)),
+) -> StreamingResponse:
+    ride = await ride_service.get_ride(ride_id)
+    if ride.rider_id != user.id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN)
+    if ride.status not in _TRACKABLE_STATUSES:
+        raise HTTPException(status.HTTP_409_CONFLICT, "No active driver to track for this ride")
+    return StreamingResponse(sse.stream(ride_id), media_type="text/event-stream")

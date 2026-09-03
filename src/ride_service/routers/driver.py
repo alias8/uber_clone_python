@@ -1,11 +1,14 @@
-"""Ported from uber_clone's DriverController.kt."""
+"""Ported from uber_clone's DriverController.kt (and DriverOfferController.kt for the SSE
+endpoint)."""
 
 from __future__ import annotations
 
 from dataclasses import replace
 
 from fastapi import APIRouter, Depends, Response, status
+from fastapi.responses import StreamingResponse
 
+from ride_service import sse
 from ride_service.auth.cookies import issue_token_cookie
 from ride_service.auth.dependencies import AuthContext, require_role, resolve_current_user
 from ride_service.dispatch import DEFAULT_SEARCH_RADIUS_KM
@@ -83,3 +86,10 @@ async def nearby(
 ) -> list[NearbyDriverResponse]:
     results = await driver_service.find_nearby(lat, lng, radius_km)
     return [NearbyDriverResponse(driver_id=r.driver_id, distance_km=r.distance_km) for r in results]
+
+
+@router.get("/offers")
+async def stream_offers(
+    user: User = Depends(resolve_current_user), _auth: AuthContext = Depends(require_role(Role.DRIVER))
+) -> StreamingResponse:
+    return StreamingResponse(sse.stream(user.id), media_type="text/event-stream")

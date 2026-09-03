@@ -1,23 +1,18 @@
-"""Ported from KafkaConsumer.kt's four @KafkaListener methods.
-
-ride-requested is the one handler with real (Redis-observable) M4 behavior: dispatching to
-nearby drivers. ride-accepted/-completed/-cancelled in Kotlin exist almost entirely to drive
-SSE (EmitterRegistry) — computing a driver's ETA to pickup, notifying other dispatched drivers
-their offer was cancelled, closing a ride's location stream — none of which exists in this port
-yet (M5). Those lines are commented the same way this project has deferred every other
-milestone's out-of-scope pieces (see services/ride.py, services/driver.py). ride-accepted does
-keep the one Redis-only piece of cleanup: deleting the now-stale `dispatched:{ride_id}` key.
-"""
+"""Ported from KafkaConsumer.kt's four @KafkaListener methods."""
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+from typing import cast
 
 from aiokafka import AIOKafkaConsumer
 
+from ride_service import sse
 from ride_service.config import settings
-from ride_service.dispatch import DISPATCHED_KEY_PREFIX, fanout_to_nearby_drivers
+from ride_service.dispatch import DISPATCHED_KEY_PREFIX, fanout_to_nearby_drivers, get_driver_location
+from ride_service.geo import eta_minutes, haversine_km
 from ride_service.kafka_producer import (
     RIDE_ACCEPTED_TOPIC,
     RIDE_CANCELLED_TOPIC,
@@ -97,10 +92,21 @@ async def handle_ride_accepted(ride_id: str) -> None:
         return
     logger.info("Ride accepted: id=%s driver=%s rider=%s", ride.id, ride.driver_id, ride.rider_id)
 
-    # Computing the assigned driver's ETA to pickup and emitting it, plus notifying every other
-    # dispatched driver their offer was cancelled, are both SSE (EmitterRegistry) — deferred
-    # until M5. The one real cleanup left is dropping the now-stale dispatched-drivers set.
-    await get_client().delete(f"{DISPATCHED_KEY_PREFIX}{ride_id}")
+    if ride.driver_id is not None:
+        position = await get_driver_location(ride.driver_id)
+        if position is not None:
+            lat, lng = position
+            eta = eta_minutes(haversine_km(lat, lng, ride.pickup_lat, ride.pickup_lng))
+            sse.emit(ride.id, "driver_eta_to_pickup", json.dumps({"etaMinutes": eta}))
+
+    client = get_client()
+    dispatched_key = f"{DISPATCHED_KEY_PREFIX}{ride_id}"
+    dispatched_drivers = cast("set[str]", await client.smembers(dispatched_key))
+    payload = json.dumps({"rideId": ride_id})
+    for driver_id in dispatched_drivers:
+        if driver_id != ride.driver_id:
+            sse.emit(driver_id, "offer_cancelled", payload)
+    await client.delete(dispatched_key)
 
 
 async def handle_ride_completed(ride_id: str) -> None:
@@ -112,9 +118,9 @@ async def handle_ride_completed(ride_id: str) -> None:
     logger.info(
         "Ride completed: id=%s fare=%s driver=%s rider=%s", ride.id, ride.fare, ride.driver_id, ride.rider_id
     )
-    # emitterRegistry.complete(rideId) in the original closes the ride's SSE location stream —
-    # deferred until M5. Payment processing was never implemented in the Kotlin original either
-    # (just a TODO comment there).
+    sse.complete(ride_id)
+    # Payment processing was never implemented in the Kotlin original either (just a TODO
+    # comment there).
 
 
 async def handle_ride_cancelled(ride_id: str) -> None:
@@ -124,7 +130,7 @@ async def handle_ride_cancelled(ride_id: str) -> None:
     if ride is None:
         return
     logger.info("Ride cancelled: id=%s rider=%s", ride.id, ride.rider_id)
-    # emitterRegistry.complete(rideId) — deferred until M5.
+    sse.complete(ride_id)
 
 
 _HANDLERS = {

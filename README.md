@@ -33,6 +33,8 @@ src/ride_service/
   kafka_producer.py        Publishes ride-requested/accepted/completed/cancelled
   kafka_consumer.py        Consumes those four topics (see "Kafka" below)
   stale_ride_retry.py       Background job re-publishing stuck REQUESTED rides
+  sse.py                     In-process SSE registry (see "SSE" below)
+  ride_offer_listener.py      Redis pub/sub -> SSE bridge for driver ride offers
   services/                RideService / DriverService / RatingService, one module each — the
                             domain logic, async
   state.py                  Process-wide singletons wiring repos + services together
@@ -41,8 +43,10 @@ src/ride_service/
     cookies.py                HttpOnly cookie issuance (ported from JwtCookieService.kt)
     dependencies.py            FastAPI auth + require_role() dependencies (ported from JwtFilter.kt)
   routers/
-    auth.py, rides.py, driver.py   One router per original Spring controller
-  main.py                    FastAPI app — lifespan starts/stops the Kafka consumer + retry job
+    auth.py, rides.py, driver.py   One router per original Spring controller — rides.py has
+                                    GET /{id}/location, driver.py has GET /offers (both SSE)
+  main.py                    FastAPI app — lifespan starts/stops the Kafka consumer, retry job,
+                              and the ride-offer listener
 migrations/                 Alembic — three revisions mirroring uber_clone's V1/V2/V3 SQL exactly
 tests/                       pytest — testcontainers spins up a real throwaway Postgres, Redis,
                               AND Kafka broker per test session (Docker must be running)
@@ -50,9 +54,9 @@ tests/                       pytest — testcontainers spins up a real throwaway
 
 ## Ported faithfully vs. reimplemented
 
-Kept exact (same constants, same formulas, ported test cases prove numeric parity): Haversine + 30 km/h ETA; the surge formula (`clamp(pending/available, 1.0, 3.0)`, ~1km grid cache, 30s TTL); the fare formula (`$2.00 + $1.50/km`, HALF_UP rounding to 2dp); rate-limit thresholds (5 ride-requests/min/rider, 10 auth-attempts/15min/IP); the ride state machine and every guard condition; the JWT dual-role design (DB `role` = permanent capability, JWT `role` claim = active mode, reissued on `/auth/switch-mode`); the Postgres schema itself — same tables, columns, types, indexes and constraints as `V1__baseline_schema.sql`/`V2__ride_indexes.sql`/`V3__rating_count.sql`, via three matching Alembic revisions; the Redis design — same `drivers:locations` geo-index and `drivers:available` set keys, same `surge:{lat}:{lng}` cache key format and 30s TTL, as `DriverService.kt`/`PricingGrpcService.kt`; the Kafka pipeline — same four topic names and bare-ride-id wire format, same `dispatched:{rideId}` key + 5-minute TTL and `ride_offers:{driverId}` pub/sub channel + camelCase JSON payload as `DispatchService.kt`, same 60s/2-minute stale-retry timing as `StaleRideRetryJob.kt`.
+Kept exact (same constants, same formulas, ported test cases prove numeric parity): Haversine + 30 km/h ETA; the surge formula (`clamp(pending/available, 1.0, 3.0)`, ~1km grid cache, 30s TTL); the fare formula (`$2.00 + $1.50/km`, HALF_UP rounding to 2dp); rate-limit thresholds (5 ride-requests/min/rider, 10 auth-attempts/15min/IP); the ride state machine and every guard condition; the JWT dual-role design (DB `role` = permanent capability, JWT `role` claim = active mode, reissued on `/auth/switch-mode`); the Postgres schema itself — same tables, columns, types, indexes and constraints as `V1__baseline_schema.sql`/`V2__ride_indexes.sql`/`V3__rating_count.sql`, via three matching Alembic revisions; the Redis design — same `drivers:locations` geo-index and `drivers:available` set keys, same `surge:{lat}:{lng}` cache key format and 30s TTL, as `DriverService.kt`/`PricingGrpcService.kt`; the Kafka pipeline — same four topic names and bare-ride-id wire format, same `dispatched:{rideId}` key + 5-minute TTL and `ride_offers:{driverId}` pub/sub channel + camelCase JSON payload as `DispatchService.kt`, same 60s/2-minute stale-retry timing as `StaleRideRetryJob.kt`; the SSE design — same event names (`driver_location`, `driver_eta_to_pickup`, `offer_cancelled`, `ride_offer`), same registry keying (ride id for the location stream, driver id for the offers stream), and deliberately the same single-instance limitation as `EmitterRegistry.kt` (see "SSE" below).
 
-Genuinely reimplemented, where idiomatic Python differs enough to be worth naming: JPA `@Version` optimistic locking → an `asyncio.Lock` around the accept-ride check-then-write sequence (see `services/ride.py`); Bucket4j → the `limits` package against Redis, fixed-window rather than a true token bucket; `@PreAuthorize` → FastAPI `Depends()` role guards; `GEORADIUS` (deprecated in Redis 6.2+) → `GEOSEARCH` (Kotlin still uses the deprecated command); the gRPC `pricing-service` → the in-process `pricing.py` module described above; Flyway → Alembic, run as an explicit `alembic upgrade head` step rather than on app boot; Spring Kafka's `@KafkaListener`s → a plain `asyncio.create_task` consume loop in `kafka_consumer.py`; `@Scheduled(fixedDelay=...)` → an `asyncio.sleep`-loop task in `stale_ride_retry.py`.
+Genuinely reimplemented, where idiomatic Python differs enough to be worth naming: JPA `@Version` optimistic locking → an `asyncio.Lock` around the accept-ride check-then-write sequence (see `services/ride.py`); Bucket4j → the `limits` package against Redis, fixed-window rather than a true token bucket; `@PreAuthorize` → FastAPI `Depends()` role guards; `GEORADIUS` (deprecated in Redis 6.2+) → `GEOSEARCH` (Kotlin still uses the deprecated command); the gRPC `pricing-service` → the in-process `pricing.py` module described above; Flyway → Alembic, run as an explicit `alembic upgrade head` step rather than on app boot; Spring Kafka's `@KafkaListener`s → a plain `asyncio.create_task` consume loop in `kafka_consumer.py`; `@Scheduled(fixedDelay=...)` → an `asyncio.sleep`-loop task in `stale_ride_retry.py`; Spring's `SseEmitter` → an `asyncio.Queue` per connection in `sse.py`, read by a `StreamingResponse` generator.
 
 ## Database
 
@@ -124,6 +128,29 @@ Run a local broker the same way as Postgres/Redis — one `docker run` line:
 docker run -p 9092:9092 apache/kafka:3.8.0
 ```
 
+## SSE
+
+`GET /rides/{id}/location` (RIDER, must be that ride's rider, 409 unless the ride is
+`MATCHED`/`IN_PROGRESS`) and `GET /driver/offers` (DRIVER) are real Server-Sent Events streams,
+backed by `sse.py` — an in-process registry (`asyncio.Queue` per connection, keyed by ride id
+or driver id) ported from `EmitterRegistry.kt`. Four event types, matching the Kotlin names
+exactly: `driver_location` (from `services/driver.py::update_location`, to the rider tracking
+that driver's active ride), `driver_eta_to_pickup` and `offer_cancelled` (from
+`kafka_consumer.py`'s `ride-accepted` handler), and `ride_offer` (from `ride_offer_listener.py`,
+a background task bridging the `ride_offers:*` Redis pub/sub channel — written by
+`dispatch.py::fanout_to_nearby_drivers` — to a driver's own stream).
+
+This keeps `EmitterRegistry.kt`'s single-instance limitation deliberately: a stream only
+receives events pushed on the same process holding its connection, same as the Kotlin original.
+Not something this port "fixes," since the Kotlin source doesn't do it either and nothing in
+the milestone list asks for multi-instance-safe SSE.
+
+`TestClient` can't exercise a live, open-ended stream in this environment (its httpx-based
+transport buffers the full response body before returning, which just hangs against a
+never-ending generator) — `tests/test_sse.py` covers the registry and every emit/complete call
+site directly instead. See a real stream working with `curl -N <url>` (cookies from a prior
+login/register call) against the running app.
+
 ## Running it
 
 ```
@@ -150,13 +177,12 @@ suite to start — budget ~30-45s of one-time session startup on top of Postgres
 
 ## Status
 
-Milestones 1-4 are done: FastAPI skeleton, JWT-cookie auth with the dual-role design, the full
+Milestones 1-5 are done: FastAPI skeleton, JWT-cookie auth with the dual-role design, the full
 ride state machine, fare/surge quoting, driver registration/dispatch, Postgres persistence
 (SQLAlchemy 2.0 async + Alembic), Redis (driver geo-index, availability set, surge cache, rate
-limiting), and now the Kafka dispatch pipeline + stale-ride retry — all covered by tests
-running against real Postgres, Redis, and Kafka via testcontainers, `mypy --strict` and
-`pytest` clean. Not yet built:
+limiting), the Kafka dispatch pipeline + stale-ride retry, and now SSE for live driver
+location/ETA and ride offers — all covered by tests running against real Postgres, Redis, and
+Kafka via testcontainers, `mypy --strict` and `pytest` clean. Not yet built:
 
-- **Milestone 5** — SSE endpoints (`GET /rides/{id}/location`, `GET /driver/offers`) — `kafka_consumer.py`'s ride-accepted/-completed/-cancelled handlers have commented-out lines marking exactly where this plugs in
 - **Milestone 6** — Docker + docker-compose + GitHub Actions CI running against real infra
 - **Milestone 7 (stretch)** — port the multi-region AWS deployment doc, optionally a live deploy

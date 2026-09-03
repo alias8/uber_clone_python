@@ -85,6 +85,17 @@ class RideRepository:
             rows = (await session.execute(stmt)).scalars().all()
             return [_ride_from_row(r) for r in rows]
 
+    async def find_first_by_driver_id_and_status_in(
+        self, driver_id: str, statuses: tuple[RideStatus, ...]
+    ) -> Ride | None:
+        async with get_sessionmaker()() as session:
+            status_values = [s.value for s in statuses]
+            stmt = select(RideRow).where(
+                RideRow.driver_id == driver_id, RideRow.status.in_(status_values)
+            )
+            row = (await session.execute(stmt)).scalars().first()
+            return _ride_from_row(row) if row is not None else None
+
     async def find_by_status_and_requested_at_before(
         self, status: RideStatus, cutoff: datetime
     ) -> list[Ride]:

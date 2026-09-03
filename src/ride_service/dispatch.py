@@ -68,6 +68,17 @@ async def find_nearby_available_drivers(
     ]
 
 
+async def get_driver_location(driver_id: str) -> tuple[float, float] | None:
+    """Ported from DriverService.kt::getDriverLocation. Returns (lat, lng) — note GEOPOS itself
+    returns (lon, lat), Redis's convention; this flips it to match the rest of this codebase."""
+    positions = cast("list[tuple[float, float] | None]", await get_client().geopos(DRIVER_GEO_KEY, driver_id))
+    position = positions[0]
+    if position is None:
+        return None
+    lng, lat = position
+    return lat, lng
+
+
 async def fanout_to_nearby_drivers(ride: Ride) -> None:
     nearby = await find_nearby_available_drivers(ride.pickup_lat, ride.pickup_lng, DEFAULT_SEARCH_RADIUS_KM)
     if not nearby:
