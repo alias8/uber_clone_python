@@ -1,8 +1,8 @@
-"""The async Redis client seam, mirroring db/engine.py's configure()/get_client()/dispose()
+"""The async Redis client seam, mirroring db/engine.py's configure()/get_sessionmaker()/dispose()
 shape. Used for the driver geo-index, the driver availability set, and the surge cache
 (rate_limit.py has its own, separate seam — see that module's docstring for why).
 
-get_client() hands back one client per *running event loop* rather than one process-wide
+get_redis_client() hands back one client per *running event loop* rather than one process-wide
 singleton: a TestClient runs the ASGI app in its own background-thread event loop per test,
 distinct from the loop pytest-asyncio hands the test function itself, and a redis-py client's
 connections are bound to the loop that opened them — sharing one client across loops raises
@@ -28,7 +28,7 @@ def configure(url: str) -> None:
     _clients = {}
 
 
-def get_client() -> Redis:
+def get_redis_client() -> Redis:
     global _url
     if _url is None:
         _url = settings.redis_url

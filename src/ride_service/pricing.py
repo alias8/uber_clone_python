@@ -15,7 +15,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import cast
 
 from ride_service.geo import haversine_km
-from ride_service.redis_client import get_client
+from ride_service.redis_client import get_redis_client
 
 BASE_FARE = Decimal("2.00")
 PER_KM_RATE = Decimal("1.50")
@@ -52,11 +52,11 @@ def calculate_fare(distance_km: float, surge_multiplier: Decimal) -> Decimal:
 
 class SurgeCache:
     async def get(self, key: str) -> Decimal | None:
-        cached = cast("str | None", await get_client().get(key))
+        cached = cast("str | None", await get_redis_client().get(key))
         return Decimal(cached) if cached is not None else None
 
     async def set(self, key: str, value: Decimal, ttl_seconds: int = SURGE_TTL_SECONDS) -> None:
-        await get_client().set(key, str(value), ex=ttl_seconds)
+        await get_redis_client().set(key, str(value), ex=ttl_seconds)
 
 
 class PricingService:

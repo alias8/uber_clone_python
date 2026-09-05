@@ -11,7 +11,7 @@ from ride_service.routers import auth, driver, rides
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # kafka_producer has no start() — get_producer() lazily creates one per event loop on
-    # first publish, same as redis_client.get_client() (see kafka_producer.py's docstring).
+    # first publish, same as redis_client.get_redis_client() (see kafka_producer.py's docstring).
     await kafka_consumer.start()
     await stale_ride_retry.start()
     await ride_offer_listener.start()

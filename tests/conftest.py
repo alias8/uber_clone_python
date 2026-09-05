@@ -75,7 +75,7 @@ async def _reset_state() -> None:
     async with db_engine.get_sessionmaker()() as session:
         await session.execute(text("TRUNCATE users, drivers, rides, ratings RESTART IDENTITY CASCADE"))
         await session.commit()
-    await redis_client.get_client().flushdb()
+    await redis_client.get_redis_client().flushdb()
 
 
 @pytest.fixture

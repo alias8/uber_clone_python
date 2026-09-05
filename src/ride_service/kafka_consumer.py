@@ -20,7 +20,7 @@ from ride_service.kafka_producer import (
     RIDE_REQUESTED_TOPIC,
 )
 from ride_service.models import RideStatus
-from ride_service.redis_client import get_client
+from ride_service.redis_client import get_redis_client
 
 logger = logging.getLogger(__name__)
 
@@ -99,14 +99,14 @@ async def handle_ride_accepted(ride_id: str) -> None:
             eta = eta_minutes(haversine_km(lat, lng, ride.pickup_lat, ride.pickup_lng))
             sse.emit(ride.id, "driver_eta_to_pickup", json.dumps({"etaMinutes": eta}))
 
-    client = get_client()
+    redis_client = get_redis_client()
     dispatched_key = f"{DISPATCHED_KEY_PREFIX}{ride_id}"
-    dispatched_drivers = cast("set[str]", await client.smembers(dispatched_key))
+    dispatched_drivers = cast("set[str]", await redis_client.smembers(dispatched_key))
     payload = json.dumps({"rideId": ride_id})
     for driver_id in dispatched_drivers:
         if driver_id != ride.driver_id:
             sse.emit(driver_id, "offer_cancelled", payload)
-    await client.delete(dispatched_key)
+    await redis_client.delete(dispatched_key)
 
 
 async def handle_ride_completed(ride_id: str) -> None:

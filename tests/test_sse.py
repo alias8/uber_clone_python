@@ -19,7 +19,7 @@ from ride_service import kafka_consumer, sse
 from ride_service.dispatch import DISPATCHED_KEY_PREFIX, RIDE_OFFER_CHANNEL_PREFIX
 from ride_service.main import app
 from ride_service.models import RideStatus
-from ride_service.redis_client import get_client
+from ride_service.redis_client import get_redis_client
 from ride_service.state import driver_service, ride_repository
 from tests.conftest import register_and_login, register_driver
 
@@ -109,7 +109,7 @@ async def test_handle_ride_accepted_notifies_eta_and_cancels_other_offers(client
     loser_id = loser.get("/auth/me").json()["user_id"]
 
     await kafka_consumer.handle_ride_requested(ride_id)
-    assert await get_client().smembers(f"{DISPATCHED_KEY_PREFIX}{ride_id}") == {winner_id, loser_id}
+    assert await get_redis_client().smembers(f"{DISPATCHED_KEY_PREFIX}{ride_id}") == {winner_id, loser_id}
 
     winner.post(f"/rides/{ride_id}/accept")
 
@@ -130,7 +130,7 @@ async def test_handle_ride_accepted_notifies_eta_and_cancels_other_offers(client
     assert cancel_event == "offer_cancelled"
     assert json.loads(cancel_payload) == {"rideId": ride_id}
 
-    assert await get_client().exists(f"{DISPATCHED_KEY_PREFIX}{ride_id}") == 0
+    assert await get_redis_client().exists(f"{DISPATCHED_KEY_PREFIX}{ride_id}") == 0
 
 
 async def test_handle_ride_completed_and_cancelled_close_the_ride_stream(client: TestClient) -> None:
@@ -164,7 +164,7 @@ async def test_ride_offer_listener_forwards_pubsub_messages_to_the_registry(clie
     queue = sse.register(alice_id)
     payload = json.dumps({"rideId": "some-ride"})
     for _ in range(50):
-        await get_client().publish(f"{RIDE_OFFER_CHANNEL_PREFIX}{alice_id}", payload)
+        await get_redis_client().publish(f"{RIDE_OFFER_CHANNEL_PREFIX}{alice_id}", payload)
         try:
             item = await asyncio.wait_for(queue.get(), timeout=0.2)
         except TimeoutError:

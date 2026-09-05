@@ -20,7 +20,7 @@ from typing import cast
 
 from ride_service.geo import eta_minutes
 from ride_service.models import Ride
-from ride_service.redis_client import get_client
+from ride_service.redis_client import get_redis_client
 
 DRIVER_GEO_KEY = "drivers:locations"
 DRIVER_AVAILABLE_SET = "drivers:available"
@@ -41,11 +41,11 @@ class NearbyDriver:
 async def find_nearby_available_drivers(
     lat: float, lng: float, radius_km: float = DEFAULT_SEARCH_RADIUS_KM
 ) -> list[NearbyDriver]:
-    client = get_client()
+    redis_client = get_redis_client()
     # withdist=True guarantees each result is a (member, distance) pair, not a bare member name.
     results = cast(
         "list[tuple[str, float]]",
-        await client.geosearch(
+        await redis_client.geosearch(
             DRIVER_GEO_KEY,
             longitude=lng,
             latitude=lat,
@@ -59,8 +59,10 @@ async def find_nearby_available_drivers(
     if not results:
         return []
 
+#   results is [(driver_id, distance_km), (driver_id, distance_km), ...]
+#   available is [1, 0, 1, ...] — from smismember, same order/length as results
     driver_ids = [driver_id for driver_id, _distance_km in results]
-    available = cast("list[int]", await client.smismember(DRIVER_AVAILABLE_SET, driver_ids))
+    available = cast("list[int]", await redis_client.smismember(DRIVER_AVAILABLE_SET, driver_ids))
     return [
         NearbyDriver(driver_id=driver_id, distance_km=distance_km)
         for (driver_id, distance_km), is_available in zip(results, available, strict=True)
@@ -71,7 +73,9 @@ async def find_nearby_available_drivers(
 async def get_driver_location(driver_id: str) -> tuple[float, float] | None:
     """Ported from DriverService.kt::getDriverLocation. Returns (lat, lng) — note GEOPOS itself
     returns (lon, lat), Redis's convention; this flips it to match the rest of this codebase."""
-    positions = cast("list[tuple[float, float] | None]", await get_client().geopos(DRIVER_GEO_KEY, driver_id))
+    positions = cast(
+        "list[tuple[float, float] | None]", await get_redis_client().geopos(DRIVER_GEO_KEY, driver_id)
+    )
     position = positions[0]
     if position is None:
         return None
@@ -84,10 +88,10 @@ async def fanout_to_nearby_drivers(ride: Ride) -> None:
     if not nearby:
         return
 
-    client = get_client()
+    redis_client = get_redis_client()
     dispatched_key = f"{DISPATCHED_KEY_PREFIX}{ride.id}"
-    await client.sadd(dispatched_key, *(driver.driver_id for driver in nearby))
-    await client.expire(dispatched_key, DISPATCHED_TTL_SECONDS)
+    await redis_client.sadd(dispatched_key, *(driver.driver_id for driver in nearby))
+    await redis_client.expire(dispatched_key, DISPATCHED_TTL_SECONDS)
 
     for driver in nearby:
         # camelCase keys: this is a wire format for whatever eventually subscribes to it
@@ -103,4 +107,4 @@ async def fanout_to_nearby_drivers(ride: Ride) -> None:
                 "etaMinutes": eta_minutes(driver.distance_km),
             }
         )
-        await client.publish(f"{RIDE_OFFER_CHANNEL_PREFIX}{driver.driver_id}", payload)
+        await redis_client.publish(f"{RIDE_OFFER_CHANNEL_PREFIX}{driver.driver_id}", payload)

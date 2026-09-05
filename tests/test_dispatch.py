@@ -19,7 +19,7 @@ from ride_service.dispatch import (
 )
 from ride_service.main import app
 from ride_service.models import Ride
-from ride_service.redis_client import get_client
+from ride_service.redis_client import get_redis_client
 from ride_service.stale_ride_retry import RETRY_CUTOFF, retry_once
 from ride_service.state import ride_repository
 from tests.conftest import register_and_login, register_driver
@@ -41,7 +41,7 @@ async def test_fanout_writes_dispatched_set_with_ttl_and_publishes_offer(client:
     client.post("/driver/mode/on", json={"lat": 40.7128, "lng": -74.0060})
     alice_id = client.get("/auth/me").json()["user_id"]
 
-    redis = get_client()
+    redis = get_redis_client()
     pubsub = redis.pubsub()
     await pubsub.subscribe(f"{RIDE_OFFER_CHANNEL_PREFIX}{alice_id}")
     # subscribe() sends SUBSCRIBE without reading the response (redis-py deliberately leaves it
@@ -90,7 +90,7 @@ async def test_fanout_with_no_nearby_drivers_writes_nothing(client: TestClient) 
         dropoff_lng=RIDE_REQUEST["dropoff_lng"],
     )
     await fanout_to_nearby_drivers(ride)
-    assert await get_client().exists(f"{DISPATCHED_KEY_PREFIX}{ride.id}") == 0
+    assert await get_redis_client().exists(f"{DISPATCHED_KEY_PREFIX}{ride.id}") == 0
 
 
 async def test_handle_ride_requested_dispatches_when_still_requested(client: TestClient) -> None:
@@ -104,7 +104,7 @@ async def test_handle_ride_requested_dispatches_when_still_requested(client: Tes
 
     await kafka_consumer.handle_ride_requested(ride_id)
 
-    assert await get_client().smembers(f"{DISPATCHED_KEY_PREFIX}{ride_id}") == {driver_id}
+    assert await get_redis_client().smembers(f"{DISPATCHED_KEY_PREFIX}{ride_id}") == {driver_id}
 
 
 async def test_handle_ride_requested_skips_a_ride_that_is_no_longer_requested(client: TestClient) -> None:
@@ -114,7 +114,7 @@ async def test_handle_ride_requested_skips_a_ride_that_is_no_longer_requested(cl
 
     await kafka_consumer.handle_ride_requested(ride_id)
 
-    assert await get_client().exists(f"{DISPATCHED_KEY_PREFIX}{ride_id}") == 0
+    assert await get_redis_client().exists(f"{DISPATCHED_KEY_PREFIX}{ride_id}") == 0
 
 
 async def test_handle_ride_accepted_clears_the_dispatched_set(client: TestClient) -> None:
@@ -127,10 +127,10 @@ async def test_handle_ride_accepted_clears_the_dispatched_set(client: TestClient
 
     await kafka_consumer.handle_ride_requested(ride_id)
     dispatched_key = f"{DISPATCHED_KEY_PREFIX}{ride_id}"
-    assert await get_client().exists(dispatched_key) == 1
+    assert await get_redis_client().exists(dispatched_key) == 1
 
     await kafka_consumer.handle_ride_accepted(ride_id)
-    assert await get_client().exists(dispatched_key) == 0
+    assert await get_redis_client().exists(dispatched_key) == 0
 
 
 async def test_stale_ride_retry_republishes_an_old_requested_ride(client: TestClient) -> None:
@@ -182,7 +182,7 @@ async def test_ride_request_is_dispatched_end_to_end_through_kafka(client: TestC
     ride_id = rider.post("/rides", json=RIDE_REQUEST).json()["id"]
 
     dispatched_key = f"{DISPATCHED_KEY_PREFIX}{ride_id}"
-    redis = get_client()
+    redis = get_redis_client()
     for _ in range(50):
         if await redis.exists(dispatched_key):
             break

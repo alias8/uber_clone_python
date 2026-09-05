@@ -12,7 +12,7 @@ from redis.asyncio.client import PubSub
 
 from ride_service import sse
 from ride_service.dispatch import RIDE_OFFER_CHANNEL_PREFIX
-from ride_service.redis_client import get_client
+from ride_service.redis_client import get_redis_client
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,7 @@ _task: asyncio.Task[None] | None = None
 
 async def start() -> None:
     global _pubsub, _task
-    _pubsub = get_client().pubsub()
+    _pubsub = get_redis_client().pubsub()
     await _pubsub.psubscribe(f"{RIDE_OFFER_CHANNEL_PREFIX}*")
     _task = asyncio.create_task(_listen_loop(_pubsub))
 

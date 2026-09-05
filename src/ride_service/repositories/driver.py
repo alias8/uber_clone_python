@@ -6,7 +6,7 @@ from ride_service.db.engine import get_sessionmaker
 from ride_service.db.tables import DriverRow
 from ride_service.dispatch import DRIVER_AVAILABLE_SET, DRIVER_GEO_KEY
 from ride_service.models import Driver
-from ride_service.redis_client import get_client
+from ride_service.redis_client import get_redis_client
 
 
 class DriverRepository:
@@ -29,19 +29,19 @@ class DriverRepository:
         # concern (set_location/clear_location below) — Postgres has no lat/lng column at all,
         # so save() must not touch the geo-index, or a plain is_available toggle (which always
         # re-fetches the driver first, with no location info) would wipe it.
-        client = get_client()
+        redis_client = get_redis_client()
         if driver.is_available:
-            await client.sadd(DRIVER_AVAILABLE_SET, driver.user_id)
+            await redis_client.sadd(DRIVER_AVAILABLE_SET, driver.user_id)
         else:
-            await client.srem(DRIVER_AVAILABLE_SET, driver.user_id)
+            await redis_client.srem(DRIVER_AVAILABLE_SET, driver.user_id)
 
         return saved
 
     async def set_location(self, user_id: str, lat: float, lng: float) -> None:
-        await get_client().geoadd(DRIVER_GEO_KEY, [lng, lat, user_id])
+        await get_redis_client().geoadd(DRIVER_GEO_KEY, [lng, lat, user_id])
 
     async def clear_location(self, user_id: str) -> None:
-        await get_client().zrem(DRIVER_GEO_KEY, user_id)
+        await get_redis_client().zrem(DRIVER_GEO_KEY, user_id)
 
     @staticmethod
     def _driver_from_row(row: DriverRow) -> Driver:
