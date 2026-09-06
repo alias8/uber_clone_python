@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import cast
+from typing import Protocol, cast
 
 from aiokafka import AIOKafkaConsumer
 
@@ -29,6 +29,15 @@ CONSUMER_GROUP_ID = "feed-fanout-group"
 _bootstrap_servers: str | None = None
 _consumer: AIOKafkaConsumer | None = None
 _task: asyncio.Task[None] | None = None
+
+
+class ConsumerRecordLike(Protocol):
+    """aiokafka ships no type stubs at all (see pyproject.toml's mypy override) — iterating an
+    AIOKafkaConsumer yields Any. This names the two ConsumerRecord attributes this module
+    actually reads, so mypy can check the rest of _consume_loop normally."""
+
+    value: bytes
+    topic: str
 
 
 def configure(bootstrap_servers: str) -> None:
@@ -66,7 +75,8 @@ async def stop() -> None:
 
 
 async def _consume_loop(consumer: AIOKafkaConsumer) -> None:
-    async for message in consumer:
+    async for raw_message in consumer:
+        message = cast("ConsumerRecordLike", raw_message)
         ride_id = message.value.decode("utf-8")
         try:
             await _HANDLERS[message.topic](ride_id)

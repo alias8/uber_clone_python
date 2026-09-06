@@ -19,8 +19,8 @@ router = APIRouter(prefix="/rides", tags=["rides"])
 
 @router.post("", response_model=RideResponse, status_code=status.HTTP_201_CREATED)
 async def request_ride(
-    request: RideRequest,
-    user: User = Depends(resolve_current_user),
+    request: RideRequest, # Pydantic BaseModel RideRequest
+    user: User = Depends(resolve_current_user), # fastapi Depends
     _auth: AuthContext = Depends(require_role(Role.RIDER)),
 ) -> RideResponse:
     # Prevents rider from requesting, then cancelling rapidly.

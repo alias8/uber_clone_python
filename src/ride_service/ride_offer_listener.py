@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import TypedDict, cast
 
 from redis.asyncio.client import PubSub
 
@@ -18,6 +19,19 @@ logger = logging.getLogger(__name__)
 
 _pubsub: PubSub | None = None
 _task: asyncio.Task[None] | None = None
+
+
+class PubSubMessage(TypedDict):
+    """redis-py hands back a plain dict typed as Any (see pubsub().listen()'s stub) — this
+    names its actual shape. `data`/`channel` vary by `type` (e.g. a "psubscribe" ack's `data`
+    is an int count, not a payload); this module only reads them once `type == "pmessage"`,
+    where both are guaranteed str given decode_responses=True in redis_client.py.
+    """
+
+    type: str
+    pattern: str | None
+    channel: str
+    data: str
 
 
 async def start() -> None:
@@ -42,7 +56,8 @@ async def stop() -> None:
 
 
 async def _listen_loop(pubsub: PubSub) -> None:
-    async for message in pubsub.listen():
+    async for raw_message in pubsub.listen():
+        message = cast("PubSubMessage", raw_message)
         if message["type"] != "pmessage":
             continue
         channel = message["channel"]
